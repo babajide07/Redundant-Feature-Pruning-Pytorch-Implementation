@@ -69,13 +69,13 @@ def train(epoch):
         if use_cuda:
             inputs, targets = inputs.cuda(), targets.cuda()
         optimizer.zero_grad()
-        inputs, targets = Variable(inputs), Variable(targets)
+
         outputs = net(inputs)
         loss = criterion(outputs, targets)
         loss.backward()
         optimizer.step()
 
-        train_loss += loss.data[0]
+        train_loss += loss.data
         _, predicted = torch.max(outputs.data, 1)
         total += targets.size(0)
         correct += predicted.eq(targets.data).cpu().sum()
@@ -97,7 +97,7 @@ def test(epoch):
         outputs = net(inputs)
         loss = criterion(outputs, targets)
 
-        test_loss += loss.data[0]
+        test_loss += loss.data
         _, predicted = torch.max(outputs.data, 1)
         total += targets.size(0)
         correct += predicted.eq(targets.data).cpu().sum()
@@ -212,11 +212,25 @@ tau_values = [0.54] # Error is 6.33 %
 nb_remanining_filters_all = []
 test_acc_c1= []
 
+
+def recursion_change_bn(module):
+    #update BatchNorm2D to comply with newer Pytorch versions
+    if isinstance(module, torch.nn.BatchNorm2d):
+        module.track_running_stats = 0
+    else:
+        for i, (name, module1) in enumerate(module._modules.items()):
+            module1 = recursion_change_bn(module1)
+    return module
+
 for threshold in tau_values:
     print('==> Resuming from checkpoint..')
     assert os.path.isdir('checkpoint'), 'Error: no checkpoint directory found!'
     checkpoint = torch.load('./checkpoint/ckpt.t7')
     net = checkpoint['net']
+
+    for i, (name, module) in enumerate(net._modules.items()):
+        module = recursion_change_bn(module)
+
     best_acc = checkpoint['acc']
     print('best_acc is ', best_acc)
     start_epoch = checkpoint['epoch']
@@ -235,6 +249,11 @@ for threshold in tau_values:
             rr+=1
         if isinstance(layer, nn.MaxPool2d):
             rr+=1
+        if isinstance(layer, nn.AvgPool2d):
+            #update AvgPool2D to comply with newer Pytorch versions
+            rr+=1
+            layer.divisor_override = None
+
         if isinstance(layer, nn.Conv2d):
             weight = layer.weight.data.cpu().numpy()
             bias = layer.bias.data.cpu().numpy()
@@ -318,6 +337,9 @@ for threshold in tau_values:
             layer.in_features = int(np.shape(weight_linear_rearranged_pruned)[1])
             linear_tensor = torch.from_numpy(weight_linear_rearranged_pruned)
             layer.weight = torch.nn.Parameter(linear_tensor)
+
+            #update nn.Linear to comply with newer Pytorch versions
+            layer.track_running_stats = 1
 
             params_linear = np.shape(weight_linear_rearranged_pruned)
             C1_1 = params_linear[0]
